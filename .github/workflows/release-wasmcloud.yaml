@@ -1,8 +1,8 @@
 name: Build and release wasmCloud Systemd sysext image for testing
 on:
   push:
-    branches:
-      - joonas/wasmcloud
+    tags:
+      - '*'
 
 jobs:
   build:
