@@ -1,0 +1,85 @@
+name: Build and release wasmCloud Systemd sysext image for testing
+on:
+  push:
+    branches:
+      - joonas/wasmcloud
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      # allow the action to create a release
+      contents: write
+    steps:
+      # checkout the sources
+      - uses: actions/checkout@v3
+      # build the images and generate a manifest
+      - name: build
+        run: |
+          set -euxo pipefail
+
+          sudo apt update -qq && sudo apt install -yqq \
+            curl \
+            jq \
+            squashfs-tools \
+            xz-utils
+
+          images=(
+              "wasmcloud-v0.81.0"
+          )
+          streams=()
+
+          for image in "${images[@]}"; do
+              component="${image%-*}"
+              version="${image#*-}"
+              for arch in x86-64 arm64; do
+                ARCH="${arch}" "./create_${component}_sysext.sh" "${version}" "${component}"
+                mv "${component}.raw" "${image}-${arch}.raw"
+              done
+              streams+=("${component}:-@v")
+              if [ "${component}" = "kubernetes" ]; then
+                streams+=("kubernetes-${version%.*}:.@v")
+                # Should give, e.g., v1.28 for v1.28.2 (use ${version#*.*.} to get 2)
+              fi
+          done
+          for stream in "${streams[@]}"; do
+              component="${stream%:*}"
+              pattern="${stream#*:}"
+              cat << EOF > "${component}.conf"
+           [Transfer]
+           Verify=false
+           [Source]
+           Type=url-file
+           Path=https://github.com/joonas/sysext-bakery/releases/latest/download/
+           MatchPattern=${component}${pattern}-%a.raw
+           [Target]
+           InstancesMax=3
+           Type=regular-file
+           Path=/opt/extensions/${component%-*}
+           CurrentSymlink=/etc/extensions/${component%-*}.raw
+          EOF
+          done
+
+          cat << EOF > "noop.conf"
+          [Source]
+          Type=regular-file
+          Path=/
+          MatchPattern=invalid@v.raw
+          [Target]
+          Type=regular-file
+          Path=/
+          EOF
+
+          # Fetch the current SHA256SUMS to append to it the new list of sha256 sums.
+          # curl -fsSLO https://github.com/joonas/sysext-bakery/releases/download/latest/SHA256SUMS
+          sha256sum *.raw >> SHA256SUMS
+          sort --unique --key 2 --output SHA256SUMS SHA256SUMS
+
+      # create a Github release with the generated artifacts
+      - name: release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            SHA256SUMS
+            *.raw
+            *.conf
